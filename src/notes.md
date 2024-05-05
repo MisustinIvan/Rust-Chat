@@ -1,0 +1,6 @@
+- chat operate on a model of chatrooms
+- chatrooms are hosted by a host
+- each user has a id and a name bound to it
+- chat is a separate entity
+- chat updates itself and exposes the contents
+- the user can tell the chat to send a message
