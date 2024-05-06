@@ -26,7 +26,7 @@ impl Client {
             id: id as u32,
         };
 
-        println!("Connected to the server as {}|>{}", user.name, user.id);
+        println!("Connected to the server as {}->{}", user.name, user.id);
         Client { connection, user }
     }
 

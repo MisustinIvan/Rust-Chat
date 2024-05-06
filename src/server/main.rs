@@ -50,7 +50,7 @@ impl ChatServer {
                 .write_all(resp.as_bytes())
                 .unwrap();
 
-            println!("User {}|>{} connected", user.name, user.id);
+            println!("User {}->{} connected", user.id, user.name);
         }
     }
 }
