@@ -1,61 +1,72 @@
-use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
-};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
-use chat::{Message, User};
+fn handle_client(
+    stream: Arc<Mutex<TcpStream>>,
+    clients: Arc<Mutex<HashMap<String, Arc<Mutex<TcpStream>>>>>,
+) {
+    // this is ugly but it works
+    let mut binding = stream.lock().unwrap().try_clone().unwrap();
+    let mut reader = BufReader::new(&mut binding);
 
-#[allow(dead_code)]
-#[derive(Debug)]
-struct ChatServer {
-    users: Vec<User>,
-    messages: Vec<Message>,
-    connections: HashMap<u32, TcpStream>,
-}
-
-impl ChatServer {
-    fn new() -> Self {
-        ChatServer {
-            users: Vec::new(),
-            messages: Vec::new(),
-            connections: HashMap::new(),
-        }
-    }
-
-    fn run(&mut self, addr: &str, port: u16) {
-        let listener = TcpListener::bind(format!("{}:{}", addr, port)).unwrap();
-        println!("Server listening on {}:{}", addr, port);
-
-        for connection in listener.incoming() {
-            let connection = connection.unwrap();
-
-            let reader = BufReader::new(&connection);
-            // haha jokes -> lets just agree that the first thing sent is the username
-            let username = reader.lines().next().unwrap().unwrap();
-
-            let user = User {
-                name: username,
-                id: self.users.len() as u32,
-            };
-
-            self.connections.insert(user.id, connection);
-            self.users.push(user.clone());
-
-            let resp = format!("{}\n\n", user.id);
-
-            self.connections
-                .get_mut(&user.id)
-                .unwrap()
-                .write_all(resp.as_bytes())
-                .unwrap();
-
-            println!("User {}->{} connected", user.id, user.name);
-        }
+    loop {
+        let mut msg = String::new();
+        match reader.read_line(&mut msg) {
+            Ok(_) => {
+                if !msg.trim().is_empty() {
+                    println!("Received message: {}", msg.trim());
+                    // echo back
+                    stream.lock().unwrap().write_all(msg.as_bytes()).unwrap();
+                    // send the message to all clients
+                    let clients = clients.lock().unwrap();
+                    for client in clients.values() {
+                        let mut client = client.lock().unwrap();
+                        client.write_all(msg.as_bytes()).unwrap();
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
+        };
     }
 }
 
 fn main() {
-    let mut server = ChatServer::new();
-    server.run("localhost", 8080);
+    let listener = TcpListener::bind("localhost:6969").unwrap();
+    println!("Server listening on port 6969");
+
+    let clients: Arc<Mutex<HashMap<String, Arc<Mutex<TcpStream>>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let mut handles = vec![];
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let clients = clients.clone();
+                let shared_stream = Arc::new(Mutex::new(stream));
+
+                clients.lock().unwrap().insert(
+                    shared_stream
+                        .lock()
+                        .unwrap()
+                        .peer_addr()
+                        .unwrap()
+                        .to_string(),
+                    shared_stream.clone(),
+                );
+
+                handles.push(thread::spawn(move || {
+                    handle_client(shared_stream, clients);
+                }))
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+            }
+        }
+    }
 }
