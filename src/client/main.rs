@@ -10,17 +10,34 @@ use std::{
 
 #[allow(dead_code)]
 struct Client {
-    connection: Arc<Mutex<TcpStream>>,
+    stream: Arc<Mutex<TcpStream>>,
 }
 
 impl Client {
-    pub fn new(addr: &str, port: &str) -> Self {
-        let connection = Arc::new(Mutex::new(
-            TcpStream::connect(format!("{}:{}", addr, port)).unwrap(),
-        ));
-        connection.lock().unwrap().set_nonblocking(true).unwrap();
-        println!("Connected to server at {}:{}", addr, port);
-        Self { connection }
+    pub fn new(addr: &str, port: &str, username: &str) -> Result<Self, io::Error> {
+        let addr = format!("{}:{}", addr, port);
+        let stream = TcpStream::connect(addr.clone());
+
+        println!("listening on {addr} as {username}");
+
+        match stream {
+            Ok(mut stream) => {
+                match stream.set_nonblocking(true) {
+                    Ok(_) => {}
+                    Err(e) => return Err(e),
+                }
+
+                match stream.write_all(format!("{}\n", username).as_bytes()) {
+                    Ok(_) => {}
+                    Err(e) => return Err(e),
+                }
+
+                Ok(Client {
+                    stream: Arc::new(Mutex::new(stream)),
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn run(&mut self) {
@@ -29,17 +46,15 @@ impl Client {
 
         loop {
             match stdin_channel.try_recv() {
-                Ok(msg) => self
-                    .connection
-                    .lock()
-                    .unwrap()
-                    .write_all(msg.as_bytes())
-                    .unwrap(),
+                Ok(msg) => match self.stream.lock().unwrap().write_all(msg.as_bytes()) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("Error: {}", e),
+                },
                 Err(_) => {}
             }
 
             match server_reader.try_recv() {
-                Ok(msg) => println!("Received message: {}", msg),
+                Ok(msg) => println!("{msg}"),
                 Err(_) => {}
             }
         }
@@ -49,9 +64,19 @@ impl Client {
         let (sender, receiver) = mpsc::channel::<String>();
         thread::spawn(move || loop {
             let mut buffer = String::new();
-            io::stdin().read_line(&mut buffer).unwrap();
+            match io::stdin().read_line(&mut buffer) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                }
+            };
             if !buffer.trim().is_empty() {
-                sender.send(buffer).unwrap();
+                match sender.send(buffer) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                    }
+                };
             }
         });
         return receiver;
@@ -59,7 +84,7 @@ impl Client {
 
     fn spawn_server_reader(&self) -> Receiver<String> {
         let (sender, receiver) = mpsc::channel::<String>();
-        let connection = self.connection.clone();
+        let connection = self.stream.clone();
 
         thread::spawn(move || loop {
             let mut buffer = String::new();
@@ -68,7 +93,12 @@ impl Client {
             match reader.read_line(&mut buffer) {
                 Ok(_) => {
                     if !buffer.trim().is_empty() {
-                        sender.send(buffer.trim().to_string()).unwrap();
+                        match sender.send(buffer.trim().to_string()) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                            }
+                        };
                     }
                 }
                 Err(e) => {
@@ -86,6 +116,19 @@ impl Client {
 }
 
 fn main() {
-    let mut client = Client::new("localhost", "6969");
-    client.run();
+    let args = std::env::args().collect::<Vec<String>>();
+
+    let username = match args.get(1) {
+        Some(username) => username,
+        None => "default",
+    };
+
+    match Client::new("localhost", "6969", username) {
+        Ok(mut client) => {
+            client.run();
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+        }
+    };
 }
