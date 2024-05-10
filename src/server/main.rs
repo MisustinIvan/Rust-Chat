@@ -19,7 +19,7 @@ impl Server {
 
     pub fn run(&mut self, addr: &str, port: &str) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("{}:{}", addr, port))?;
-        println!("[INFO]: listening on {addr}:{port}");
+        println!("[INFO] -> listening on {addr}:{port}");
 
         for stream in listener.incoming() {
             match stream {
@@ -27,7 +27,7 @@ impl Server {
                     self.add_client(stream);
                 }
                 Err(e) => {
-                    eprintln!("[ERROR]: {}", e);
+                    eprintln!("[ERROR] -> {}", e);
                 }
             }
         }
@@ -72,9 +72,14 @@ fn spawn_client_handler(
         loop {
             let mut msg = String::new();
             match reader.read_line(&mut msg) {
+                Ok(0) => {
+                    println!("[INFO] -> {} disconnected", username);
+                    clients.lock().unwrap().remove(&username);
+                    break;
+                }
                 Ok(_) => {
                     if !msg.is_empty() {
-                        println!("[{username}]: {}", msg.trim());
+                        println!("[MSG] -> {}: {}", username, msg.trim());
                         let clients = clients.lock().unwrap();
                         for (name, client) in clients.iter() {
                             if *name != username {
@@ -98,12 +103,12 @@ fn read_line_from_stream(stream: &TcpStream) -> Result<String, std::io::Error> {
     let mut buffer = String::new();
     let mut reader = BufReader::new(stream);
     reader.read_line(&mut buffer)?;
-    Ok(buffer)
+    Ok(buffer.trim().to_string())
 }
 
 fn main() {
     let mut server = Server::new();
-    match server.run("localhost", "696969") {
+    match server.run("localhost", "6969") {
         Ok(_) => {}
         Err(e) => {
             println!("[ERROR]: {}", e);

@@ -46,9 +46,14 @@ impl Client {
 
         loop {
             match stdin_channel.try_recv() {
-                Ok(msg) => match self.stream.lock().unwrap().write_all(msg.as_bytes()) {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("Error: {}", e),
+                Ok(msg) => match msg.trim() {
+                    "/exit" => {
+                        break;
+                    }
+                    _ => match self.stream.lock().unwrap().write_all(msg.as_bytes()) {
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[ERROR] -> {}", e),
+                    },
                 },
                 Err(_) => {}
             }
@@ -58,6 +63,13 @@ impl Client {
                 Err(_) => {}
             }
         }
+
+        println!("[INFO] -> exitting");
+        self.stream
+            .lock()
+            .unwrap()
+            .shutdown(std::net::Shutdown::Both)
+            .unwrap();
     }
 
     fn spawn_stdin_reader(&self) -> Receiver<String> {
@@ -67,14 +79,14 @@ impl Client {
             match io::stdin().read_line(&mut buffer) {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    eprintln!("[ERROR] -> {}", e);
                 }
             };
             if !buffer.trim().is_empty() {
                 match sender.send(buffer) {
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Error: {}", e);
+                        eprintln!("[ERROR] -> {}", e);
                     }
                 };
             }
@@ -96,7 +108,7 @@ impl Client {
                         match sender.send(buffer.trim().to_string()) {
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!("Error: {}", e);
+                                eprintln!("[ERROR] -> {}", e);
                             }
                         };
                     }
@@ -105,7 +117,7 @@ impl Client {
                     if e.kind() == io::ErrorKind::WouldBlock {
                         continue;
                     } else {
-                        eprintln!("Error: {}", e);
+                        eprintln!("[ERROR] -> {}", e);
                         break;
                     }
                 }
@@ -128,7 +140,7 @@ fn main() {
             client.run();
         }
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("[ERROR] -> {}", e);
         }
     };
 }
