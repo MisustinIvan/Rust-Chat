@@ -1,2 +1,2 @@
-#A simple terminal chat app
+# A simple terminal chat app
 - not done yet, but working
