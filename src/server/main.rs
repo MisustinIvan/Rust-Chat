@@ -57,16 +57,16 @@ impl Server {
 
         println!("[INFO] -> new client: {}", username);
         clients.insert(username.clone(), stream.clone());
-        spawn_client_handler(stream.clone(), self.clients.clone(), username);
+        spawn_client_handler(self.clients.clone(), username);
     }
 }
 
 fn spawn_client_handler(
-    stream: Arc<Mutex<TcpStream>>,
     clients: Arc<Mutex<HashMap<String, Arc<Mutex<TcpStream>>>>>,
     username: String,
 ) {
     thread::spawn(move || {
+        let stream = clients.lock().unwrap().get(&username).unwrap().clone();
         let mut binding = stream.lock().unwrap().try_clone().unwrap();
         let mut reader = BufReader::new(&mut binding);
         loop {

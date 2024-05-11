@@ -1,5 +1,4 @@
 use std::{
-    borrow::BorrowMut,
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
     sync::mpsc::{self, Receiver},
