@@ -1,16 +1,14 @@
 use std::{
+    borrow::BorrowMut,
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
-    sync::{
-        mpsc::{self, Receiver},
-        Arc, Mutex,
-    },
+    sync::mpsc::{self, Receiver},
     thread,
 };
 
 #[allow(dead_code)]
 struct Client {
-    stream: Arc<Mutex<TcpStream>>,
+    stream: TcpStream,
 }
 
 impl Client {
@@ -32,9 +30,7 @@ impl Client {
                     Err(e) => return Err(e),
                 }
 
-                Ok(Client {
-                    stream: Arc::new(Mutex::new(stream)),
-                })
+                Ok(Client { stream })
             }
             Err(e) => Err(e),
         }
@@ -43,6 +39,7 @@ impl Client {
     pub fn run(&mut self) {
         let stdin_channel = self.spawn_stdin_reader();
         let server_reader = self.spawn_server_reader();
+        let mut connection = self.stream.try_clone().unwrap();
 
         loop {
             match stdin_channel.try_recv() {
@@ -50,7 +47,7 @@ impl Client {
                     "/exit" => {
                         break;
                     }
-                    _ => match self.stream.lock().unwrap().write_all(msg.as_bytes()) {
+                    _ => match connection.write_all(msg.as_bytes()) {
                         Ok(_) => {}
                         Err(e) => eprintln!("[ERROR] -> {}", e),
                     },
@@ -62,21 +59,19 @@ impl Client {
                 Ok(msg) => println!("{msg}"),
                 Err(_) => {}
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         println!("[INFO] -> exitting");
-        self.stream
-            .lock()
-            .unwrap()
-            .shutdown(std::net::Shutdown::Both)
-            .unwrap();
+        self.stream.shutdown(std::net::Shutdown::Both).unwrap();
     }
 
     fn spawn_stdin_reader(&self) -> Receiver<String> {
         let (sender, receiver) = mpsc::channel::<String>();
+        let stdin = io::stdin();
         thread::spawn(move || loop {
             let mut buffer = String::new();
-            match io::stdin().read_line(&mut buffer) {
+            match stdin.read_line(&mut buffer) {
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("[ERROR] -> {}", e);
@@ -96,12 +91,11 @@ impl Client {
 
     fn spawn_server_reader(&self) -> Receiver<String> {
         let (sender, receiver) = mpsc::channel::<String>();
-        let connection = self.stream.clone();
+        let connection = self.stream.try_clone().unwrap();
 
         thread::spawn(move || loop {
             let mut buffer = String::new();
-            let stream = connection.lock().unwrap();
-            let mut reader = BufReader::new(&*stream);
+            let mut reader = BufReader::new(&connection);
             match reader.read_line(&mut buffer) {
                 Ok(_) => {
                     if !buffer.trim().is_empty() {
@@ -115,13 +109,16 @@ impl Client {
                 }
                 Err(e) => {
                     if e.kind() == io::ErrorKind::WouldBlock {
+                        thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     } else {
+                        thread::sleep(std::time::Duration::from_millis(100));
                         eprintln!("[ERROR] -> {}", e);
                         break;
                     }
                 }
             }
+            thread::sleep(std::time::Duration::from_millis(100));
         });
         return receiver;
     }
