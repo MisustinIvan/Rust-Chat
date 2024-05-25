@@ -2,7 +2,7 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
     sync::mpsc::{self, Receiver},
-    thread, time,
+    thread,
 };
 
 use chat::Message;
@@ -29,7 +29,6 @@ impl Client {
                 // send the join message
                 stream
                     .write_all(format!("{}\n", serde_json::to_string(&msg).unwrap()).as_bytes())?;
-                println!("join message sent");
 
                 // create a reader and a buffer
                 let mut reader = BufReader::new(&stream);
@@ -37,11 +36,9 @@ impl Client {
 
                 // read the response
                 reader.read_line(&mut buffer)?;
-                println!("response received");
 
                 // set nonblocking
                 stream.set_nonblocking(true)?;
-                println!("nonblocking set");
 
                 let id: u32;
                 let response: Message = serde_json::from_str(&buffer).unwrap();
@@ -49,6 +46,9 @@ impl Client {
                     Message::JoinResponseSuccess { user_id } => {
                         id = user_id;
                         println!("[INFO] -> joined as {username}:{user_id}");
+                    }
+                    Message::JoinResponseFailure { reason } => {
+                        return Err(io::Error::new(io::ErrorKind::Other, reason.to_string()));
                     }
                     _ => {
                         return Err(io::Error::new(
@@ -73,6 +73,35 @@ impl Client {
                 Ok(msg) => match msg.trim() {
                     "/exit" => {
                         break;
+                    }
+                    msg if msg.starts_with("/msg") => {
+                        let parts = msg.split_whitespace().collect::<Vec<&str>>();
+
+                        if parts.len() < 3 {
+                            println!("[ERROR] -> empty message");
+                            continue;
+                        }
+
+                        let target = parts[1];
+                        let content = parts[2..].join(" ");
+
+                        let message = Message::PrivateMessage {
+                            user_id: self.id,
+                            target_name: target.to_string(),
+                            content,
+                        };
+
+                        self.send_message(format!(
+                            "{}\n",
+                            serde_json::to_string(&message).unwrap()
+                        ));
+                    }
+                    "/list" => {
+                        let message = Message::ListRequest { user_id: self.id };
+                        self.send_message(format!(
+                            "{}\n",
+                            serde_json::to_string(&message).unwrap()
+                        ));
                     }
                     _ => {
                         let message = Message::Message {

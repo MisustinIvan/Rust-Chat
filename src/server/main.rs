@@ -6,12 +6,6 @@ use std::thread;
 
 use chat::{JoinFailureReason, Message};
 
-struct Client {
-    username: String,
-    id: u32,
-    stream: TcpStream,
-}
-
 struct Server {
     clients: Arc<Mutex<HashMap<String, Arc<Mutex<TcpStream>>>>>,
     socket: TcpListener,
@@ -47,7 +41,7 @@ impl Server {
         let join_msg: Message =
             serde_json::from_str(read_line_from_stream(&stream).unwrap().as_str()).unwrap();
 
-        let mut username = match join_msg {
+        let username = match join_msg {
             Message::JoinRequest { username } => username,
             _ => {
                 eprintln!("[ERROR] -> unexpected message from client");
@@ -57,7 +51,7 @@ impl Server {
 
         let mut clients = self.clients.lock().unwrap();
 
-        while clients.contains_key(&username) {
+        if clients.contains_key(&username) {
             let resp = Message::JoinResponseFailure {
                 reason: JoinFailureReason::UsernameInUse,
             };
@@ -65,15 +59,8 @@ impl Server {
                 .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
                 .unwrap();
 
-            username = match serde_json::from_str(read_line_from_stream(&stream).unwrap().as_str())
-                .unwrap()
-            {
-                Message::JoinRequest { username } => username,
-                _ => {
-                    eprintln!("[ERROR] -> unexpected message from client");
-                    return;
-                }
-            };
+            println!("[INFO] -> username [{username}] already in use, disconnecting client",);
+            return;
         }
 
         let resp = Message::JoinResponseSuccess {
@@ -84,7 +71,6 @@ impl Server {
             .unwrap();
 
         println!("[INFO] -> new client: {}", username);
-        stream.write_all(b"Welcome to the chat!\n").unwrap();
         clients.insert(username.clone(), Arc::new(Mutex::new(stream)));
         spawn_client_handler(self.clients.clone(), username);
     }
@@ -122,6 +108,49 @@ fn spawn_client_handler(
                                         client.write_all(msg.as_bytes()).unwrap();
                                     }
                                 }
+                            }
+                            Message::PrivateMessage {
+                                user_id: _,
+                                target_name,
+                                content,
+                            } => {
+                                let msg = format!("[PRIV] -> {}: {}\n", username, content);
+                                match clients.lock().unwrap().get(&target_name) {
+                                    Some(client) => {
+                                        println!(
+                                            "[PRIV_MSG] -> {} -> {}: {}",
+                                            username,
+                                            target_name,
+                                            content.trim()
+                                        );
+                                        let mut client = client.lock().unwrap();
+                                        client.write_all(msg.as_bytes()).unwrap();
+                                    }
+                                    None => {
+                                        println!(
+                                            "[PRIV_MSG_FAIL] -> {username} -> client [{target_name}] not found in chat",
+                                        );
+
+                                        let mut client = stream.lock().unwrap();
+                                        client
+                                            .write_all(
+                                                format!(
+                                                    "[ERROR] -> client [{}] not found in chat\n",
+                                                    target_name
+                                                )
+                                                .as_bytes(),
+                                            )
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                            Message::ListRequest { user_id: _ } => {
+                                println!("[LIST] -> {}", username);
+                                let clients = clients.lock().unwrap();
+                                let keys: Vec<String> = clients.keys().cloned().collect();
+                                let mut client = stream.lock().unwrap();
+                                let list = format!("[LIST] -> {}\n", keys.join(", "));
+                                client.write_all(list.as_bytes()).unwrap();
                             }
                             _ => {
                                 eprintln!("[ERROR] -> unexpected message from client");
