@@ -2,34 +2,63 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
     sync::mpsc::{self, Receiver},
-    thread,
+    thread, time,
 };
+
+use chat::Message;
 
 #[allow(dead_code)]
 struct Client {
+    id: u32,
     stream: TcpStream,
 }
 
 impl Client {
-    pub fn new(addr: &str, port: &str, username: &str) -> Result<Self, io::Error> {
-        let addr = format!("{}:{}", addr, port);
-        let stream = TcpStream::connect(addr.clone());
-
+    pub fn new(addr: &str, username: &str) -> Result<Self, io::Error> {
+        // create a new stream
+        let stream = TcpStream::connect(addr);
         println!("listening on {addr} as {username}");
 
         match stream {
             Ok(mut stream) => {
-                match stream.set_nonblocking(true) {
-                    Ok(_) => {}
-                    Err(e) => return Err(e),
+                // create the join message
+                let msg = Message::JoinRequest {
+                    username: username.to_string(),
+                };
+
+                // send the join message
+                stream
+                    .write_all(format!("{}\n", serde_json::to_string(&msg).unwrap()).as_bytes())?;
+                println!("join message sent");
+
+                // create a reader and a buffer
+                let mut reader = BufReader::new(&stream);
+                let mut buffer = String::new();
+
+                // read the response
+                reader.read_line(&mut buffer)?;
+                println!("response received");
+
+                // set nonblocking
+                stream.set_nonblocking(true)?;
+                println!("nonblocking set");
+
+                let id: u32;
+                let response: Message = serde_json::from_str(&buffer).unwrap();
+                match response {
+                    Message::JoinResponseSuccess { user_id } => {
+                        id = user_id;
+                        println!("[INFO] -> joined as {username}:{user_id}");
+                    }
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected response from server",
+                        ));
+                    }
                 }
 
-                match stream.write_all(format!("{}\n", username).as_bytes()) {
-                    Ok(_) => {}
-                    Err(e) => return Err(e),
-                }
-
-                Ok(Client { stream })
+                Ok(Client { stream, id })
             }
             Err(e) => Err(e),
         }
@@ -38,7 +67,6 @@ impl Client {
     pub fn run(&mut self) {
         let stdin_channel = self.spawn_stdin_reader();
         let server_reader = self.spawn_server_reader();
-        let mut connection = self.stream.try_clone().unwrap();
 
         loop {
             match stdin_channel.try_recv() {
@@ -46,23 +74,39 @@ impl Client {
                     "/exit" => {
                         break;
                     }
-                    _ => match connection.write_all(msg.as_bytes()) {
-                        Ok(_) => {}
-                        Err(e) => eprintln!("[ERROR] -> {}", e),
-                    },
+                    _ => {
+                        let message = Message::Message {
+                            user_id: self.id,
+                            content: msg.to_string(),
+                        };
+                        self.send_message(format!(
+                            "{}\n",
+                            serde_json::to_string(&message).unwrap()
+                        ));
+                    }
                 },
                 Err(_) => {}
             }
 
             match server_reader.try_recv() {
-                Ok(msg) => println!("{msg}"),
+                Ok(msg) => {
+                    println!("{msg}");
+                }
                 Err(_) => {}
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
         println!("[INFO] -> exitting");
         self.stream.shutdown(std::net::Shutdown::Both).unwrap();
+    }
+
+    fn send_message(&mut self, msg: String) {
+        match self.stream.write_all(msg.as_bytes()) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[ERROR] sending message -> {e}");
+            }
+        }
     }
 
     fn spawn_stdin_reader(&self) -> Receiver<String> {
@@ -73,14 +117,14 @@ impl Client {
             match stdin.read_line(&mut buffer) {
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("[ERROR] -> {}", e);
+                    eprintln!("[ERROR] reading from stream -> {}", e);
                 }
             };
             if !buffer.trim().is_empty() {
                 match sender.send(buffer) {
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("[ERROR] -> {}", e);
+                        eprintln!("[ERROR] error sending through channel -> {}", e);
                     }
                 };
             }
@@ -101,7 +145,7 @@ impl Client {
                         match sender.send(buffer.trim().to_string()) {
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!("[ERROR] -> {}", e);
+                                eprintln!("[ERROR] error sending through channel -> {}", e);
                             }
                         };
                     }
@@ -112,7 +156,7 @@ impl Client {
                         continue;
                     } else {
                         thread::sleep(std::time::Duration::from_millis(100));
-                        eprintln!("[ERROR] -> {}", e);
+                        eprintln!("[ERROR] error reading line -> {}", e);
                         break;
                     }
                 }
@@ -131,12 +175,15 @@ fn main() {
         None => "default",
     };
 
-    match Client::new("localhost", "6969", username) {
-        Ok(mut client) => {
-            client.run();
-        }
+    let addr = match args.get(2) {
+        Some(addr) => addr,
+        None => "localhost:6969",
+    };
+
+    match Client::new(addr, username) {
+        Ok(mut client) => client.run(),
         Err(e) => {
-            eprintln!("[ERROR] -> {}", e);
+            eprintln!("[ERROR] error creating client -> {}", e);
         }
     };
 }

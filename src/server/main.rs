@@ -4,24 +4,33 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-mod old;
+use chat::{JoinFailureReason, Message};
+
+struct Client {
+    username: String,
+    id: u32,
+    stream: TcpStream,
+}
 
 struct Server {
     clients: Arc<Mutex<HashMap<String, Arc<Mutex<TcpStream>>>>>,
+    socket: TcpListener,
 }
 
 impl Server {
-    pub fn new() -> Self {
-        Server {
+    pub fn new(addr: &str) -> Result<Self, std::io::Error> {
+        let socket = TcpListener::bind(addr)?;
+
+        Ok(Server {
             clients: Arc::new(Mutex::new(HashMap::new())),
-        }
+            socket,
+        })
     }
 
-    pub fn run(&mut self, addr: &str, port: &str) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind(format!("{}:{}", addr, port))?;
-        println!("[INFO] -> listening on {addr}:{port}");
+    pub fn run(&mut self) -> Result<(), std::io::Error> {
+        println!("[INFO] -> listening on {}", self.socket.local_addr()?);
 
-        for stream in listener.incoming() {
+        for stream in self.socket.incoming() {
             match stream {
                 Ok(stream) => {
                     self.add_client(stream);
@@ -31,32 +40,52 @@ impl Server {
                 }
             }
         }
-
         Ok(())
     }
 
-    fn add_client(&self, stream: TcpStream) {
-        let stream = Arc::new(Mutex::new(stream));
-        let mut username = read_line_from_stream(&stream.lock().unwrap()).unwrap();
+    fn add_client(&self, mut stream: TcpStream) {
+        let join_msg: Message =
+            serde_json::from_str(read_line_from_stream(&stream).unwrap().as_str()).unwrap();
+
+        let mut username = match join_msg {
+            Message::JoinRequest { username } => username,
+            _ => {
+                eprintln!("[ERROR] -> unexpected message from client");
+                return;
+            }
+        };
+
         let mut clients = self.clients.lock().unwrap();
 
         while clients.contains_key(&username) {
+            let resp = Message::JoinResponseFailure {
+                reason: JoinFailureReason::UsernameInUse,
+            };
             stream
-                .lock()
-                .unwrap()
-                .write_all(b"Username already taken, please try again\n")
+                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
                 .unwrap();
-            username = read_line_from_stream(&stream.lock().unwrap()).unwrap();
+
+            username = match serde_json::from_str(read_line_from_stream(&stream).unwrap().as_str())
+                .unwrap()
+            {
+                Message::JoinRequest { username } => username,
+                _ => {
+                    eprintln!("[ERROR] -> unexpected message from client");
+                    return;
+                }
+            };
         }
 
+        let resp = Message::JoinResponseSuccess {
+            user_id: clients.len() as u32,
+        };
         stream
-            .lock()
-            .unwrap()
-            .write_all(b"Welcome to the chat!\n")
+            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
             .unwrap();
 
         println!("[INFO] -> new client: {}", username);
-        clients.insert(username.clone(), stream.clone());
+        stream.write_all(b"Welcome to the chat!\n").unwrap();
+        clients.insert(username.clone(), Arc::new(Mutex::new(stream)));
         spawn_client_handler(self.clients.clone(), username);
     }
 }
@@ -79,13 +108,24 @@ fn spawn_client_handler(
                 }
                 Ok(_) => {
                     if !msg.is_empty() {
-                        println!("[MSG] -> {}: {}", username, msg.trim());
-                        let clients = clients.lock().unwrap();
-                        for (name, client) in clients.iter() {
-                            if *name != username {
-                                msg = format!("{}: {}", username, msg);
-                                let mut client = client.lock().unwrap();
-                                client.write_all(msg.as_bytes()).unwrap();
+                        let msg: Message = serde_json::from_str(msg.as_str()).unwrap();
+                        match msg {
+                            Message::Message {
+                                user_id: _,
+                                content,
+                            } => {
+                                println!("[MSG] -> {}: {}", username, content.trim());
+                                for (name, client) in clients.lock().unwrap().iter() {
+                                    if *name != username {
+                                        let msg = format!("{}: {}", username, content);
+                                        let mut client = client.lock().unwrap();
+                                        client.write_all(msg.as_bytes()).unwrap();
+                                    }
+                                }
+                            }
+                            _ => {
+                                eprintln!("[ERROR] -> unexpected message from client");
+                                break;
                             }
                         }
                     }
@@ -107,11 +147,15 @@ fn read_line_from_stream(stream: &TcpStream) -> Result<String, std::io::Error> {
 }
 
 fn main() {
-    let mut server = Server::new();
-    match server.run("localhost", "6969") {
-        Ok(_) => {}
+    match Server::new("localhost:6969") {
+        Ok(mut server) => match server.run() {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[ERROR] -> {}", e);
+            }
+        },
         Err(e) => {
-            println!("[ERROR]: {}", e);
+            eprintln!("[ERROR] -> {}", e);
         }
-    };
+    }
 }
